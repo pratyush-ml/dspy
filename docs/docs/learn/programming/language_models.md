@@ -41,6 +41,19 @@ dspy.configure(lm=lm)
         dspy.configure(lm=lm)
         ```
 
+    === "OpenRouter"
+        You can authenticate by setting the `OPENROUTER_API_KEY` env variable or passing `api_key` below.
+
+        ```python linenums="1"
+        import dspy
+
+        lm = dspy.LM("openrouter/openai/gpt-4o-mini", api_key="YOUR_OPENROUTER_API_KEY")
+        dspy.configure(lm=lm)
+        ```
+
+        DSPy routes `openrouter/...` chat and responses calls directly through OpenRouter's OpenAI-compatible API.
+        Text completions, embeddings, and streaming still use the LiteLLM compatibility path for now.
+
     === "Databricks"
         If you're on the Databricks platform, authentication is automatic via their SDK. If not, you can set the env variables `DATABRICKS_API_KEY` and `DATABRICKS_API_BASE`, or pass `api_key` and `api_base` below.
 
@@ -245,4 +258,3 @@ Please note that not all models or providers support the Responses API, check [L
 ## Advanced: Building custom LMs and writing your own Adapters.
 
 Though rarely needed, you can write custom LMs by inheriting from `dspy.BaseLM`. Another advanced layer in the DSPy ecosystem is that of _adapters_, which sit between DSPy signatures and LMs. A future version of this guide will discuss these advanced features, though you likely don't need them.
-

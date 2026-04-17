@@ -9,6 +9,7 @@ from dspy.clients.cache import Cache
 from dspy.clients.embedding import Embedder
 from dspy.clients.lm import LM
 from dspy.clients.provider import Provider, TrainingJob
+from dspy.clients.openrouter import OpenRouterProvider
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +115,7 @@ __all__ = [
     "LM",
     "Provider",
     "TrainingJob",
+    "OpenRouterProvider",
     "inspect_history",
     "Embedder",
     "enable_litellm_logging",

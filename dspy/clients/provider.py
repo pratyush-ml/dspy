@@ -103,3 +103,30 @@ class Provider:
         train_kwargs: dict[str, Any] | None = None,
     ) -> str:
         raise NotImplementedError
+
+    @staticmethod
+    def supports_function_calling(model: str, model_type: str = "chat") -> bool:
+        import litellm
+
+        return litellm.supports_function_calling(model=model)
+
+    @staticmethod
+    def supports_json_mode(model: str, model_type: str = "chat") -> bool:
+        import litellm
+
+        provider = model.split("/", 1)[0] if "/" in model else "openai"
+        params = litellm.get_supported_openai_params(model=model, custom_llm_provider=provider)
+        return bool(params and "response_format" in params)
+
+    @staticmethod
+    def supports_response_schema(model: str, model_type: str = "chat") -> bool:
+        import litellm
+
+        provider = model.split("/", 1)[0] if "/" in model else "openai"
+        return litellm.supports_response_schema(model=model, custom_llm_provider=provider)
+
+    @staticmethod
+    def supports_reasoning(model: str, model_type: str = "chat") -> bool:
+        import litellm
+
+        return litellm.supports_reasoning(model)

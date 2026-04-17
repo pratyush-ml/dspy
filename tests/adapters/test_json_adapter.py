@@ -1,4 +1,5 @@
 from unittest import mock
+from types import SimpleNamespace
 
 import pydantic
 import pytest
@@ -7,6 +8,17 @@ from litellm.utils import ChatCompletionMessageToolCall, Choices, Function, Mess
 from openai.types.responses import ResponseOutputMessage
 
 import dspy
+
+
+def make_openrouter_client(calls, chat_response=None):
+    def create_chat(**kwargs):
+        calls["chat"] = kwargs
+        return chat_response
+
+    return SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_chat)),
+        responses=SimpleNamespace(create=lambda **kwargs: None),
+    )
 
 
 def test_json_adapter_passes_structured_output_when_supported_by_model():
@@ -681,6 +693,33 @@ def test_json_adapter_json_mode_no_structured_outputs():
         assert call_kwargs.get("response_format") == {"type": "json_object"}
 
 
+def test_openrouter_json_adapter_skips_litellm_capability_checks():
+    class TestSignature(dspy.Signature):
+        question: str = dspy.InputField()
+        answer: str = dspy.OutputField(desc="String output field")
+
+    calls = {}
+    fake_client = make_openrouter_client(
+        calls,
+        chat_response=ModelResponse(
+            choices=[Choices(message=Message(content="{'answer': 'Test output'}"))],
+            model="openai/gpt-4o-mini",
+        ),
+    )
+
+    with (
+        mock.patch("dspy.clients.lm._openrouter_client", return_value=fake_client),
+        mock.patch("litellm.get_supported_openai_params", side_effect=AssertionError("unexpected litellm capability lookup")),
+        mock.patch("litellm.supports_response_schema", side_effect=AssertionError("unexpected litellm capability lookup")),
+    ):
+        with dspy.context(lm=dspy.LM(model="openrouter/openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter()):
+            result = dspy.Predict(TestSignature)(question="Dummy question!")
+
+    assert result.answer == "Test output"
+    assert calls["chat"]["response_format"]["type"] == "json_schema"
+    assert calls["chat"]["response_format"]["json_schema"]["name"] == "DSPyProgramOutputs"
+
+
 @pytest.mark.asyncio
 async def test_json_adapter_json_mode_no_structured_outputs_async():
     class TestSignature(dspy.Signature):
@@ -853,6 +892,59 @@ def test_json_adapter_toolcalls_native_function_calling():
         )
         assert result[0]["answer"] == "Paris"
         assert result[0]["tool_calls"] is None
+
+
+def test_openrouter_toolcalls_native_function_calling_skips_litellm_capability_checks():
+    class MySignature(dspy.Signature):
+        question: str = dspy.InputField()
+        tools: list[dspy.Tool] = dspy.InputField()
+        answer: str = dspy.OutputField()
+        tool_calls: dspy.ToolCalls = dspy.OutputField()
+
+    def get_weather(city: str) -> str:
+        return f"The weather in {city} is sunny"
+
+    calls = {}
+    fake_client = make_openrouter_client(
+        calls,
+        chat_response=ModelResponse(
+            choices=[
+                Choices(
+                    finish_reason="tool_calls",
+                    index=0,
+                    message=Message(
+                        content=None,
+                        role="assistant",
+                        tool_calls=[
+                            ChatCompletionMessageToolCall(
+                                function=Function(arguments='{"city":"Paris"}', name="get_weather"),
+                                id="call_123",
+                                type="function",
+                            )
+                        ],
+                    ),
+                ),
+            ],
+            model="openai/gpt-4o-mini",
+        ),
+    )
+
+    with (
+        mock.patch("dspy.clients.lm._openrouter_client", return_value=fake_client),
+        mock.patch("litellm.supports_function_calling", side_effect=AssertionError("unexpected litellm capability lookup")),
+    ):
+        result = dspy.JSONAdapter(use_native_function_calling=True)(
+            dspy.LM(model="openrouter/openai/gpt-4o-mini", cache=False),
+            {},
+            MySignature,
+            [],
+            {"question": "What is the weather in Paris?", "tools": [dspy.Tool(get_weather)]},
+        )
+
+    assert result[0]["tool_calls"] == dspy.ToolCalls(
+        tool_calls=[dspy.ToolCalls.ToolCall(name="get_weather", args={"city": "Paris"})]
+    )
+    assert calls["chat"]["tools"][0]["function"]["name"] == "get_weather"
 
 
 def test_json_adapter_toolcalls_no_native_function_calling():

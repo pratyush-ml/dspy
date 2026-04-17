@@ -9,10 +9,12 @@ import litellm
 import pydantic
 from anyio.streams.memory import MemoryObjectSendStream
 from asyncer import syncify
+from openai import AsyncOpenAI, OpenAI
 
 import dspy
 from dspy.clients.cache import request_cache
 from dspy.clients.openai import OpenAIProvider
+from dspy.clients.openrouter import OPENROUTER_API_BASE, OpenRouterProvider
 from dspy.clients.provider import Provider, ReinforceJob, TrainingJob
 from dspy.clients.utils_finetune import TrainDataFormat
 from dspy.dsp.utils.settings import settings
@@ -149,11 +151,13 @@ class LM(BaseLM):
             kwargs.pop("rollout_id", None)
 
         if self.model_type == "chat":
-            completion = litellm_completion
+            completion = openrouter_completion if _use_openrouter_direct_path(self.provider) else litellm_completion
         elif self.model_type == "text":
             completion = litellm_text_completion
         elif self.model_type == "responses":
-            completion = litellm_responses_completion
+            completion = (
+                openrouter_responses_completion if _use_openrouter_direct_path(self.provider) else litellm_responses_completion
+            )
         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)
 
         results = completion(
@@ -187,11 +191,15 @@ class LM(BaseLM):
             kwargs.pop("rollout_id", None)
 
         if self.model_type == "chat":
-            completion = alitellm_completion
+            completion = aopenrouter_completion if _use_openrouter_direct_path(self.provider) else alitellm_completion
         elif self.model_type == "text":
             completion = alitellm_text_completion
         elif self.model_type == "responses":
-            completion = alitellm_responses_completion
+            completion = (
+                aopenrouter_responses_completion
+                if _use_openrouter_direct_path(self.provider)
+                else alitellm_responses_completion
+            )
         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)
 
         results = await completion(
@@ -273,6 +281,8 @@ class LM(BaseLM):
             job.set_result(err)
 
     def infer_provider(self) -> Provider:
+        if OpenRouterProvider.is_provider_model(self.model):
+            return OpenRouterProvider()
         if OpenAIProvider.is_provider_model(self.model):
             return OpenAIProvider()
         return Provider()
@@ -350,6 +360,60 @@ def _get_stream_completion_fn(
         return async_stream_completion
 
 
+def _use_openrouter_direct_path(provider: Provider) -> bool:
+    return isinstance(provider, OpenRouterProvider) and dspy.settings.send_stream is None
+
+
+def _normalize_openrouter_chat_response_format(response_format: Any):
+    if isinstance(response_format, type) and issubclass(response_format, pydantic.BaseModel):
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": response_format.__name__,
+                "schema": response_format.model_json_schema(),
+                "strict": True,
+            },
+        }
+    if (
+        isinstance(response_format, dict)
+        and response_format.get("type") == "json_schema"
+        and "json_schema" not in response_format
+        and "schema" in response_format
+    ):
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": response_format.get("name", "DSPyProgramOutputs"),
+                "schema": response_format["schema"],
+                "strict": response_format.get("strict", True),
+            },
+        }
+    return response_format
+
+
+def _prepare_openrouter_request(request: dict[str, Any], responses_api: bool = False):
+    request = dict(request)
+    request["model"] = OpenRouterProvider.normalize_model(request["model"])
+    api_key = request.pop("api_key", None) or os.getenv("OPENROUTER_API_KEY")
+    base_url = (
+        request.pop("base_url", None)
+        or request.pop("api_base", None)
+        or os.getenv("OPENROUTER_API_BASE")
+        or OPENROUTER_API_BASE
+    )
+    if not responses_api and "response_format" in request:
+        request["response_format"] = _normalize_openrouter_chat_response_format(request["response_format"])
+    return request, api_key, base_url
+
+
+def _openrouter_client(api_key: str | None, base_url: str, max_retries: int) -> OpenAI:
+    return OpenAI(api_key=api_key, base_url=base_url, max_retries=max_retries)
+
+
+def _aopenrouter_client(api_key: str | None, base_url: str, max_retries: int) -> AsyncOpenAI:
+    return AsyncOpenAI(api_key=api_key, base_url=base_url, max_retries=max_retries)
+
+
 def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
     cache = cache or {"no-cache": True, "no-store": True}
     request = dict(request)
@@ -366,6 +430,16 @@ def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[st
         )
 
     return stream_completion()
+
+
+def openrouter_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
+    del cache
+    request = dict(request)
+    request.pop("rollout_id", None)
+    headers = request.pop("headers", None)
+    request, api_key, base_url = _prepare_openrouter_request(request)
+    client = _openrouter_client(api_key=api_key, base_url=base_url, max_retries=num_retries)
+    return client.chat.completions.create(extra_headers=_get_headers(headers), **request)
 
 
 def litellm_text_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
@@ -416,6 +490,16 @@ async def alitellm_completion(request: dict[str, Any], num_retries: int, cache: 
     return await stream_completion()
 
 
+async def aopenrouter_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
+    del cache
+    request = dict(request)
+    request.pop("rollout_id", None)
+    headers = request.pop("headers", None)
+    request, api_key, base_url = _prepare_openrouter_request(request)
+    client = _aopenrouter_client(api_key=api_key, base_url=base_url, max_retries=num_retries)
+    return await client.chat.completions.create(extra_headers=_get_headers(headers), **request)
+
+
 async def alitellm_text_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
     cache = cache or {"no-cache": True, "no-store": True}
     request = dict(request)
@@ -460,6 +544,17 @@ def litellm_responses_completion(request: dict[str, Any], num_retries: int, cach
     )
 
 
+def openrouter_responses_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
+    del cache
+    request = dict(request)
+    request.pop("rollout_id", None)
+    headers = request.pop("headers", None)
+    request, api_key, base_url = _prepare_openrouter_request(request, responses_api=True)
+    request = _convert_chat_request_to_responses_request(request)
+    client = _openrouter_client(api_key=api_key, base_url=base_url, max_retries=num_retries)
+    return client.responses.create(extra_headers=_get_headers(headers), **request)
+
+
 async def alitellm_responses_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
     cache = cache or {"no-cache": True, "no-store": True}
     request = dict(request)
@@ -474,6 +569,17 @@ async def alitellm_responses_completion(request: dict[str, Any], num_retries: in
         headers=_get_headers(headers),
         **request,
     )
+
+
+async def aopenrouter_responses_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
+    del cache
+    request = dict(request)
+    request.pop("rollout_id", None)
+    headers = request.pop("headers", None)
+    request, api_key, base_url = _prepare_openrouter_request(request, responses_api=True)
+    request = _convert_chat_request_to_responses_request(request)
+    client = _aopenrouter_client(api_key=api_key, base_url=base_url, max_retries=num_retries)
+    return await client.responses.create(extra_headers=_get_headers(headers), **request)
 
 
 def _convert_chat_request_to_responses_request(request: dict[str, Any]):

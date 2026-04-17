@@ -2,7 +2,6 @@ import logging
 from typing import TYPE_CHECKING, Any, get_origin
 
 import json_repair
-import litellm
 
 from dspy.adapters.types import History, Type
 from dspy.adapters.types.base_type import split_message_content_for_custom_types
@@ -83,7 +82,7 @@ class Adapter:
                     "input field with type `list[dspy.Tool]`."
                 )
 
-            if tool_call_output_field_name and litellm.supports_function_calling(model=lm.model):
+            if tool_call_output_field_name and lm.provider.supports_function_calling(lm.model, lm.model_type):
                 tools = inputs[tool_call_input_field_name]
                 tools = tools if isinstance(tools, list) else [tools]
 

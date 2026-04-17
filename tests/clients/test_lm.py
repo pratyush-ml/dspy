@@ -3,6 +3,7 @@ import tempfile
 import time
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ from openai.types.responses import ResponseOutputMessage, ResponseReasoningItem
 from openai.types.responses.response_reasoning_item import Summary
 
 import dspy
+from dspy.clients.openrouter import OPENROUTER_API_BASE
 from dspy.utils.dummies import DummyLM
 from dspy.utils.usage_tracker import track_usage
 
@@ -47,6 +49,36 @@ def make_response(output_blocks):
     )
 
 
+def make_openrouter_client(calls, chat_response=None, responses_response=None):
+    def create_chat(**kwargs):
+        calls["chat"] = kwargs
+        return chat_response
+
+    def create_responses(**kwargs):
+        calls["responses"] = kwargs
+        return responses_response
+
+    return SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_chat)),
+        responses=SimpleNamespace(create=create_responses),
+    )
+
+
+def make_async_openrouter_client(calls, chat_response=None, responses_response=None):
+    async def create_chat(**kwargs):
+        calls["chat"] = kwargs
+        return chat_response
+
+    async def create_responses(**kwargs):
+        calls["responses"] = kwargs
+        return responses_response
+
+    return SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create_chat)),
+        responses=SimpleNamespace(create=create_responses),
+    )
+
+
 def test_chat_lms_can_be_queried(litellm_test_server):
     api_base, _ = litellm_test_server
     expected_response = ["Hi!"]
@@ -66,6 +98,110 @@ def test_chat_lms_can_be_queried(litellm_test_server):
         model_type="chat",
     )
     assert azure_openai_lm("azure openai query") == expected_response
+
+
+def test_openrouter_chat_lm_uses_direct_client():
+    expected_response = ["Hi!"]
+    calls = {}
+    fake_client = make_openrouter_client(
+        calls,
+        chat_response=ModelResponse(
+            choices=[Choices(message=Message(role="assistant", content="Hi!"))],
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            model="openai/gpt-4o-mini",
+        ),
+    )
+
+    with (
+        patch("dspy.clients.lm._openrouter_client", return_value=fake_client) as mock_client,
+        patch("litellm.completion", side_effect=AssertionError("LiteLLM should not be used for direct OpenRouter chat")),
+    ):
+        lm = dspy.LM(
+            model="openrouter/openai/gpt-4o-mini",
+            api_key="fakekey",
+            model_type="chat",
+            cache=False,
+        )
+        assert lm("openrouter query") == expected_response
+
+    mock_client.assert_called_once_with(api_key="fakekey", base_url=OPENROUTER_API_BASE, max_retries=3)
+    assert calls["chat"]["model"] == "openai/gpt-4o-mini"
+    assert calls["chat"]["messages"] == [{"role": "user", "content": "openrouter query"}]
+    assert calls["chat"]["extra_headers"]["User-Agent"].startswith("DSPy/")
+
+
+def test_openrouter_responses_lm_uses_direct_client():
+    calls = {}
+    fake_client = make_openrouter_client(
+        calls,
+        responses_response=make_response(
+            output_blocks=[
+                ResponseOutputMessage(
+                    **{
+                        "id": "msg_1",
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "OpenRouter response", "annotations": []}],
+                    }
+                ),
+                ResponseReasoningItem(
+                    **{
+                        "id": "reasoning_1",
+                        "type": "reasoning",
+                        "summary": [Summary(**{"type": "summary_text", "text": "Direct reasoning"})],
+                    }
+                ),
+            ]
+        ),
+    )
+
+    with (
+        patch("dspy.clients.lm._openrouter_client", return_value=fake_client) as mock_client,
+        patch("litellm.responses", side_effect=AssertionError("LiteLLM should not be used for direct OpenRouter responses")),
+    ):
+        lm = dspy.LM(
+            model="openrouter/openai/gpt-5-mini",
+            api_key="fakekey",
+            model_type="responses",
+            cache=False,
+            temperature=1.0,
+            max_tokens=16000,
+            reasoning_effort="low",
+        )
+        assert lm("openrouter query") == [{"text": "OpenRouter response", "reasoning_content": "Direct reasoning"}]
+
+    mock_client.assert_called_once_with(api_key="fakekey", base_url=OPENROUTER_API_BASE, max_retries=3)
+    assert calls["responses"]["model"] == "openai/gpt-5-mini"
+    assert calls["responses"]["reasoning"] == {"effort": "low", "summary": "auto"}
+
+
+@pytest.mark.asyncio
+async def test_openrouter_chat_lm_async_uses_direct_client():
+    calls = {}
+    fake_client = make_async_openrouter_client(
+        calls,
+        chat_response=ModelResponse(
+            choices=[Choices(message=Message(role="assistant", content="Hi async!"))],
+            usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            model="openai/gpt-4o-mini",
+        ),
+    )
+
+    with (
+        patch("dspy.clients.lm._aopenrouter_client", return_value=fake_client) as mock_client,
+        patch("litellm.acompletion", side_effect=AssertionError("LiteLLM should not be used for direct OpenRouter chat")),
+    ):
+        lm = dspy.LM(
+            model="openrouter/openai/gpt-4o-mini",
+            api_key="fakekey",
+            model_type="chat",
+            cache=False,
+        )
+        assert await lm.acall("openrouter async query") == ["Hi async!"]
+
+    mock_client.assert_called_once_with(api_key="fakekey", base_url=OPENROUTER_API_BASE, max_retries=3)
+    assert calls["chat"]["model"] == "openai/gpt-4o-mini"
 
 
 def test_dspy_cache(litellm_test_server, tmp_path):
