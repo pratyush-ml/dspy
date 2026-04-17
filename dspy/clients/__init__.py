@@ -8,8 +8,8 @@ from dspy.clients.base_lm import BaseLM, inspect_history
 from dspy.clients.cache import Cache
 from dspy.clients.embedding import Embedder
 from dspy.clients.lm import LM
-from dspy.clients.provider import Provider, TrainingJob
 from dspy.clients.openrouter import OpenRouterProvider
+from dspy.clients.provider import Provider, TrainingJob
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +35,7 @@ def configure_cache(
                             bounds, set this parameter to `math.inf` or a similar value.
     """
 
-    DSPY_CACHE = Cache(
+    dspy_cache = Cache(
         enable_disk_cache,
         enable_memory_cache,
         disk_cache_dir,
@@ -46,7 +46,7 @@ def configure_cache(
     import dspy
 
     # Update the reference to point to the new cache
-    dspy.cache = DSPY_CACHE
+    dspy.cache = dspy_cache
 
 
 litellm.telemetry = False

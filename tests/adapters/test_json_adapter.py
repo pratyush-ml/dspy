@@ -1,5 +1,5 @@
-from unittest import mock
 from types import SimpleNamespace
+from unittest import mock
 
 import pydantic
 import pytest
@@ -1090,7 +1090,7 @@ def test_format_system_message():
     expected_system_message = """Your input fields are:
 1. `question` (str):
 Your output fields are:
-1. `answers` (list[str]): 
+1. `answers` (list[str]):<SPACE>
 2. `scores` (list[float]):
 All interactions will be structured in the following way, with the appropriate values filled in.
 
@@ -1105,6 +1105,7 @@ Outputs will be a JSON object with the following fields.
   "answers": "{answers}        # note: the value you produce must adhere to the JSON schema: {\\"type\\": \\"array\\", \\"items\\": {\\"type\\": \\"string\\"}}",
   "scores": "{scores}        # note: the value you produce must adhere to the JSON schema: {\\"type\\": \\"array\\", \\"items\\": {\\"type\\": \\"number\\"}}"
 }
-In adhering to this structure, your objective is: 
+In adhering to this structure, your objective is:<SPACE>
         Answer the question with multiple answers and scores"""
+    expected_system_message = expected_system_message.replace("<SPACE>", " ")
     assert system_message == expected_system_message
